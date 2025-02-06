@@ -5,6 +5,7 @@ env/
 
 # Файлы конфигурации IDE
 .idea/
+.idea
 .vscode/
 
 # Кэш и временные файлы Python
