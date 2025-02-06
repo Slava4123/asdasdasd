@@ -1,47 +1,57 @@
+import os
 import asyncio
 import asyncpg
+from dotenv import load_dotenv
 
-from server.vm import VirtualMachine
+load_dotenv()
 
 
 class VMServer:
-    """Сервер для управления виртуальными машинами."""
+    """Сервер для управления виртуальными машинами с хранением состояния в БД."""
 
     def __init__(self):
-        self.vms = {}
-        self.authenticated_vms = {}
+        # Инициализация атрибута db_pool
         self.db_pool = None
 
     async def start(self, host='0.0.0.0', port=8888):
-        """Запуск сервера и инициализация БД."""
-        try:
-            # Подключение к базе данных
-            self.db_pool = await asyncpg.create_pool(
-                user='postgres',
-                password='Vb24122003vb',
-                database='vm_manager',
-                host='localhost'
-            )
-            print("✅ Connected to database")
+        """
+        Запуск сервера и инициализация базы данных.
 
-            # Создание таблиц
+        :param host: Адрес хоста для сервера
+        :param port: Порт для подключения к серверу
+        """
+        try:
+            db_host = os.getenv("DB_HOST")
+            db_port = os.getenv("DB_PORT")
+            db_user = os.getenv("DB_USER")
+            db_password = os.getenv("DB_PASSWORD")
+            db_name = os.getenv("DB_NAME")
+
+            self.db_pool = await asyncpg.create_pool(
+                user=db_user,
+                password=db_password,
+                database=db_name,
+                host=db_host,
+                port=db_port
+            )
+            print("✅ Успешно подключено к базе данных")
+
             async with self.db_pool.acquire() as conn:
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS vms (
+                await conn.execute('''CREATE TABLE IF NOT EXISTS vms (
                         id TEXT PRIMARY KEY,
-                        ram INT,
-                        cpu INT
+                        ram INT NOT NULL,
+                        cpu INT NOT NULL,
+                        is_active BOOLEAN DEFAULT FALSE,
+                        is_auth BOOLEAN DEFAULT FALSE
                     )
                 ''')
-                await conn.execute('''
-                    CREATE TABLE IF NOT EXISTS disks (
+                await conn.execute('''CREATE TABLE IF NOT EXISTS disks (
                         id TEXT PRIMARY KEY,
-                        vm_id TEXT,
-                        size INT,
-                        FOREIGN KEY (vm_id) REFERENCES vms (id)
+                        vm_id TEXT REFERENCES vms(id) ON DELETE CASCADE,
+                        size INT NOT NULL
                     )
                 ''')
-                print("✅ Database tables initialized")
+                print("✅ Таблицы базы данных созданы")
 
             # Запуск сервера
             server = await asyncio.start_server(
@@ -49,324 +59,331 @@ class VMServer:
                 host,
                 port
             )
-            print(f"🚀 Server started on {host}:{port}")
+            print(f"🚀 Сервер запущен на {host}:{port}")
 
             async with server:
                 await server.serve_forever()
 
         except Exception as e:
-            print(f"🔥 Critical error: {e}")
+            print(f"🔥 Критическая ошибка: {e}")
             raise
 
     async def handle_client(self, reader, writer):
-        """Обработка клиентских соединений.
+        """
+        Обработка соединений клиентов.
 
-        Args:
-            reader (StreamReader): Читатель данных из сокета.
-            writer (StreamWriter): Записыватель данных в сокет.
+        :param reader: Канал чтения для клиента
+        :param writer: Канал записи для клиента
         """
         addr = writer.get_extra_info('peername')
-        print(f"New connection from {addr}")
+        print(f"Новое подключение от {addr}")
         try:
             while True:
                 data = await reader.read(100)
                 if not data:
                     break
                 message = data.decode().strip()
-                print(f"Received from {addr}: {message}")
+                print(f"Получено от {addr}: {message}")
                 response = await self.process_command(message)
                 writer.write(response.encode())
                 await writer.drain()
         except Exception as e:
-            print(f"Error with {addr}: {e}")
+            print(f"Ошибка с {addr}: {e}")
         finally:
-            print(f"Connection closed with {addr}")
+            print(f"Соединение с {addr} закрыто")
             writer.close()
 
     async def process_command(self, message):
-        """Обработка команд, полученных от клиента.
+        """
+        Обработка команды клиента.
 
-        Args:
-            message (str): Команда, полученная от клиента.
-
-        Returns:
-            str: Ответ на команду.
+        :param message: Команда, полученная от клиента
+        :return: Ответ на команду
         """
         parts = message.split()
         if not parts:
-            return "Invalid command"
-        command = parts[0]
-        if command == "AUTH":
-            return await self.authenticate_vm(parts[1:])
-        elif command == "ADD_VM":
-            return await self.add_vm(parts[1:])
-        elif command == "LIST_VMS":
-            return await self.list_vms()
-        elif command == "LIST_AUTH_VMS":
-            return await self.list_authenticated_vms()
-        elif command == "UPDATE_VM":
-            return await self.update_vm(parts[1:])
-        elif command == "LOGOUT":
-            return await self.logout_vm(parts[1:])
-        elif command == "LIST_DISKS":
-            return await self.list_disks()
-        elif command == "REMOVE_VM":
-            return await self.remove_vm(parts[1:])
-        elif command == "ADD_DISK":
-            return await self.add_disk(parts[1:])
-        elif command == "CHECK_ALL_VMS":
-            return await self.check_all_vms()
-        else:
-            return "Unknown command"
+            return "Неверная команда"
+
+        command = parts[0].upper()
+        handlers = {
+            "AUTH": self.authenticate_vm,
+            "ADD_VM": self.add_vm,
+            "LIST_VMS": self.list_vms,
+            "LIST_AUTH_VMS": self.list_authenticated_vms,
+            "UPDATE_VM": self.update_vm,
+            "LOGOUT": self.logout_vm,
+            "LIST_DISKS": self.list_disks,
+            "REMOVE_VM": self.remove_vm,
+            "ADD_DISK": self.add_disk,
+            "REMOVE_DISK": self.remove_disk,
+            "CHECK_ALL_VMS": self.check_all_vms,
+        }
+
+        handler = handlers.get(command)
+        if not handler:
+            return "Неизвестная команда"
+
+        try:
+            return await handler(parts[1:])
+        except Exception as e:
+            return f"Ошибка обработки команды: {str(e)}"
 
     async def authenticate_vm(self, args):
+        """
+        Аутентификация виртуальной машины.
+
+        :param args: Аргументы команды
+        :return: Результат аутентификации
+        """
         if len(args) != 3:
-            return "Invalid AUTH command. Usage: AUTH <vm_id> <ram> <cpu>"
+            return "Неверная команда AUTH. Использование: AUTH <vm_id> <ram> <cpu>"
 
         vm_id, ram, cpu = args
-        ram = int(ram)
-        cpu = int(cpu)
-
         try:
-            async with self.db_pool.acquire() as conn:
-                # Проверяем существование ВМ в БД
-                vm = await conn.fetchrow("SELECT * FROM vms WHERE id = $1", vm_id)
-                if vm:
-                    # Если машина уже есть в БД:
-                    if vm["ram"] == ram and vm["cpu"] == cpu:
-                        # Если параметры совпали, значит "аутентификация удалась"
-                        self.authenticated_vms[vm_id] = VirtualMachine(vm_id, ram, cpu)
-                        return f"VM {vm_id} authenticated"
-                    else:
-                        # Если ID совпал, а ram/cpu — нет, значит нельзя "перезаписать" ту же ВМ:
-                        return "Authentication failed (VM exists with other specs)"
-                else:
-                    # Если в БД нет — пытаемся создать новую запись:
+            ram = int(ram)
+            cpu = int(cpu)
+        except ValueError:
+            return "Неверные значения RAM или CPU"
+
+        async with self.db_pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT ram, cpu FROM vms WHERE id = $1",
+                vm_id
+            )
+
+            if existing:
+                if existing['ram'] == ram and existing['cpu'] == cpu:
                     await conn.execute(
-                        "INSERT INTO vms (id, ram, cpu) VALUES ($1, $2, $3)",
-                        vm_id, ram, cpu
+                        "UPDATE vms SET is_active = TRUE, is_auth = TRUE WHERE id = $1",
+                        vm_id
                     )
-                    # Добавляем объект в authenticated_vms
-                    self.authenticated_vms[vm_id] = VirtualMachine(vm_id, ram, cpu)
-                    return f"VM {vm_id} registered and authenticated"
+                    return f"ВМ {vm_id} аутентифицирована"
+                return "Ошибка аутентификации: неверные характеристики"
 
-        except asyncpg.UniqueViolationError:
-            # Если кто-то параллельно вставил запись с таким же id:
-            return f"VM {vm_id} already exists (duplicate ID)."
-        except Exception as e:
-            return f"Error: {str(e)}"
-
-    async def add_vm(self, args):
-        """Добавление новой виртуальной машины (и в БД, и в локальный словарь)."""
-        if len(args) != 3:
-            return "Invalid ADD_VM command. Usage: ADD_VM <id> <ram> <cpu>"
-
-        vm_id, ram, cpu = args
-        ram = int(ram)
-        cpu = int(cpu)
-
-        # Сначала пытаемся записать новую ВМ в БД
-        try:
-            async with self.db_pool.acquire() as conn:
+            # Создание новой записи
+            try:
                 await conn.execute(
-                    "INSERT INTO vms (id, ram, cpu) VALUES ($1, $2, $3)",
+                    "INSERT INTO vms (id, ram, cpu, is_active, is_auth) "
+                    "VALUES ($1, $2, $3, TRUE, TRUE)",
                     vm_id, ram, cpu
                 )
-        except asyncpg.UniqueViolationError:
-            return f"VM {vm_id} already exists (duplicate ID)."
-        except Exception as e:
-            return f"Error creating VM in DB: {str(e)}"
+                return f"ВМ {vm_id} зарегистрирована и аутентифицирована"
+            except asyncpg.UniqueViolationError:
+                return f"ВМ {vm_id} уже существует"
 
-        # Если вставка в БД успешно прошла, создаём объект в памяти
-        vm = VirtualMachine(vm_id, ram, cpu)
-        self.vms[vm_id] = vm
-        return f"VM {vm_id} added"
-
-    async def list_vms(self):
-        """Список всех виртуальных машин.
-
-        Returns:
-            str: Список виртуальных машин.
+    async def add_vm(self, args):
         """
-        # Объединяем все виртуальные машины, чтобы избежать дублирования
-        all_vms = {**self.vms, **self.authenticated_vms}
-        return "\n".join([str(vm) for vm in all_vms.values()])
+        Добавление новой виртуальной машины.
 
-    async def list_authenticated_vms(self):
-        """Список авторизованных виртуальных машин.
-
-        Returns:
-            str: Список авторизованных виртуальных машин.
+        :param args: Аргументы команды
+        :return: Результат добавления ВМ
         """
-        return "\n".join([str(vm) for vm in self.authenticated_vms.values()])
+        if len(args) != 3:
+            return "Неверная команда ADD_VM. Использование: ADD_VM <vm_id> <ram> <cpu>"
+
+        vm_id, ram, cpu = args
+        try:
+            ram = int(ram)
+            cpu = int(cpu)
+        except ValueError:
+            return "Неверные значения RAM или CPU"
+
+        async with self.db_pool.acquire() as conn:
+            try:
+                await conn.execute(
+                    "INSERT INTO vms (id, ram, cpu, is_active) "
+                    "VALUES ($1, $2, $3, TRUE)",
+                    vm_id, ram, cpu
+                )
+                return f"ВМ {vm_id} добавлена"
+            except asyncpg.UniqueViolationError:
+                return f"ВМ {vm_id} уже существует"
+
+    async def list_vms(self, _=None):
+        """
+        Получение списка всех виртуальных машин.
+
+        :return: Список ВМ
+        """
+        async with self.db_pool.acquire() as conn:
+            records = await conn.fetch("SELECT * FROM vms WHERE is_active = TRUE")
+            if not records:
+                return "Виртуальные машины не найдены"
+
+            return "\n".join(
+                [f"{r['id']}: {r['ram']}MB RAM, {r['cpu']}CPU" for r in records]
+            )
+
+    async def list_authenticated_vms(self, _=None):
+        """
+        Получение списка авторизованных виртуальных машин.
+
+        :return: Список авторизованных ВМ
+        """
+        async with self.db_pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT * FROM vms WHERE is_auth = TRUE AND is_active = TRUE"
+            )
+            if not records:
+                return "Авторизованные ВМ не найдены"
+
+            return "\n".join(
+                [f"{r['id']}: {r['ram']}MB RAM, {r['cpu']}CPU" for r in records]
+            )
 
     async def update_vm(self, args):
+        """
+        Обновление параметров виртуальной машины.
+
+        :param args: Аргументы команды
+        :return: Результат обновления ВМ
+        """
         if len(args) != 3:
-            return "Invalid UPDATE_VM command"
+            return "Неверная команда UPDATE_VM. Использование: UPDATE_VM <id> <ram> <cpu>"
+
         vm_id, ram, cpu = args
-        ram = int(ram)
-        cpu = int(cpu)
-
-        # Обновляем записи в памяти (если есть)
-        if vm_id in self.vms:
-            self.vms[vm_id].update(ram, cpu)
-        if vm_id in self.authenticated_vms:
-            self.authenticated_vms[vm_id].update(ram, cpu)
-
-        # Обновляем в БД
         try:
-            async with self.db_pool.acquire() as conn:
-                result = await conn.execute("""
-                    UPDATE vms
-                    SET ram = $2, cpu = $3
-                    WHERE id = $1
-                """, vm_id, ram, cpu)
-                if result == "UPDATE 0":
-                    return f"VM {vm_id} not found in DB"
-        except Exception as e:
-            return f"Error updating DB: {str(e)}"
+            ram = int(ram)
+            cpu = int(cpu)
+        except ValueError:
+            return "Неверные значения RAM или CPU"
 
-        return f"VM {vm_id} updated"
+        async with self.db_pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE vms SET ram = $2, cpu = $3 WHERE id = $1",
+                vm_id, ram, cpu
+            )
+            if result == "UPDATE 0":
+                return "ВМ не найдена"
+            return f"ВМ {vm_id} обновлена"
 
     async def logout_vm(self, args):
-        """Выход из авторизованной виртуальной машины.
+        """
+        Выход из системы (деавторизация виртуальной машины).
 
-        Args:
-            args (list): Список аргументов, содержащий идентификатор ВМ.
-
-        Returns:
-            str: Результат выхода из ВМ.
+        :param args: Аргументы команды
+        :return: Результат выхода
         """
         if len(args) != 1:
-            return "Invalid LOGOUT command"
+            return "Неверная команда LOGOUT. Использование: LOGOUT <vm_id>"
+
         vm_id = args[0]
-        if vm_id in self.authenticated_vms:
-            # Перемещаем ВМ из authenticated_vms в vms
-            self.vms[vm_id] = self.authenticated_vms[vm_id]
-            del self.authenticated_vms[vm_id]
-            return f"VM {vm_id} logged out"
-        return f"VM {vm_id} not found"
+        async with self.db_pool.acquire() as conn:
+            result = await conn.execute(
+                "UPDATE vms SET is_auth = FALSE WHERE id = $1",
+                vm_id
+            )
+            if result == "UPDATE 0":
+                return "ВМ не найдена"
+            return f"ВМ {vm_id} деавторизована"
 
-    async def list_disks(self):
-        """Список всех жестких дисков с параметрами ВМ."""
-        try:
-            async with self.db_pool.acquire() as conn:
-                # Получаем диски с информацией о ВМ
-                disks = await conn.fetch('''
-                    SELECT d.id, d.size, v.id as vm_id, v.ram, v.cpu 
-                    FROM disks d
-                    LEFT JOIN vms v ON d.vm_id = v.id
-                ''')
-
-                if not disks:
-                    return "No disks found"
-
-                return "\n".join([
-                    f"Disk ID: {d['id']}, Size: {d['size']}GB, "
-                    f"VM: {d['vm_id'] or 'None'}, "
-                    f"VM Specs: {d['ram']}MB RAM, {d['cpu']} CPU"
-                    for d in disks
-                ])
-        except Exception as e:
-            return f"Error fetching disks: {str(e)}"
-
-    async def remove_vm(self, args):
-        """Удаление виртуальной машины.
-
-        Args:
-            args (list): Список аргументов, содержащий идентификатор ВМ.
-
-        Returns:
-            str: Результат удаления ВМ.
+    async def list_disks(self, _=None):
         """
-        if len(args) != 1:
-            return "Invalid REMOVE_VM command"
-        vm_id = args[0]
-        if vm_id in self.vms:
-            del self.vms[vm_id]
-            if vm_id in self.authenticated_vms:
-                del self.authenticated_vms[vm_id]
-            return f"VM {vm_id} removed"
-        return f"VM {vm_id} not found"
+        Получение списка всех дисков.
+
+        :return: Список всех дисков
+        """
+        async with self.db_pool.acquire() as conn:
+            records = await conn.fetch(
+                "SELECT d.id, d.size, v.id as vm_id "
+                "FROM disks d LEFT JOIN vms v ON d.vm_id = v.id"
+            )
+            if not records:
+                return "Диски не найдены"
+
+            return "\n".join(
+                [f"Disk {r['id']} (VM {r['vm_id']}): {r['size']}GB" for r in records]
+            )
 
     async def add_disk(self, args):
-        """Добавление жесткого диска."""
+        """
+        Добавление диска к виртуальной машине.
+
+        :param args: Аргументы команды
+        :return: Результат добавления диска
+        """
         if len(args) != 3:
-            return "Invalid ADD_DISK command. Usage: ADD_DISK <disk_id> <vm_id> <size>"
+            return "Неверная команда ADD_DISK. Использование: ADD_DISK <disk_id> <vm_id> <size>"
 
         disk_id, vm_id, size = args
         try:
-            size_int = int(size)
-            if size_int <= 0:
-                return "Invalid size: must be a positive integer"
-
-            async with self.db_pool.acquire() as conn:
-                # Проверяем существование ВМ
-                vm_exists = await conn.fetchval("SELECT 1 FROM vms WHERE id = $1", vm_id)
-                if not vm_exists:
-                    return f"VM {vm_id} does not exist"
-
-                # Добавляем диск
-                await conn.execute(
-                    "INSERT INTO disks (id, vm_id, size) VALUES ($1, $2, $3)",
-                    disk_id, vm_id, size_int
-                )
-                return f"Disk {disk_id} added to VM {vm_id}"
+            size = int(size)
         except ValueError:
-            return f"Invalid size: must be an integer"
-        except asyncpg.UniqueViolationError:
-            return f"Disk {disk_id} already exists"
-        except Exception as e:
-            return f"Error: {str(e)}"
+            return "Неверный размер диска"
 
-    async def remove_disk(self, args):
-        """Удаление жесткого диска.
+        async with self.db_pool.acquire() as conn:
+            vm_exists = await conn.fetchrow("SELECT id FROM vms WHERE id = $1", vm_id)
+            if not vm_exists:
+                return f"ВМ {vm_id} не найдена"
 
-        Args:
-            args (list): Список аргументов, содержащий идентификатор диска.
+            await conn.execute(
+                "INSERT INTO disks (id, vm_id, size) VALUES ($1, $2, $3)",
+                disk_id, vm_id, size
+            )
+            return f"Диск {disk_id} добавлен к ВМ {vm_id}"
 
-        Returns:
-            str: Результат удаления диска.
+    async def remove_vm(self, args):
+        """
+        Удаление виртуальной машины.
+
+        :param args: Аргументы команды
+        :return: Результат удаления ВМ
         """
         if len(args) != 1:
-            return "Invalid REMOVE_DISK command"
-        disk_id = args[0]
+            return "Неверная команда REMOVE. Использование: REMOVE <vm_id>"
+
+        vm_id = args[0]
+
         async with self.db_pool.acquire() as conn:
-            await conn.execute("DELETE FROM disks WHERE id = $1", disk_id)
-        return f"Disk {disk_id} removed"
+            result = await conn.execute(
+                "UPDATE vms SET is_active = FALSE, is_auth = FALSE WHERE id = $1", vm_id
+            )
 
-    async def check_all_vms(self):
-        """Проверка всех добавленных виртуальных машин.
+            if result == "UPDATE 0":
+                return f"ВМ {vm_id} не найдена"
 
-        Returns:
-            str: Список всех виртуальных машин с их параметрами.
+            return f"ВМ {vm_id} удалена"
+
+    async def remove_disk(self, args):
         """
-        try:
-            async with self.db_pool.acquire() as conn:
-                # Получаем все ВМ из базы данных
-                vms = await conn.fetch('SELECT * FROM vms')
-                if not vms:
-                    return "No VMs found"
+        Удаление диска из виртуальной машины.
 
-                # Формируем список ВМ
-                vm_list = [
-                    f"VM ID: {vm['id']}, RAM: {vm['ram']}MB, CPU: {vm['cpu']} cores"
-                    for vm in vms
-                ]
+        :param args: Аргументы команды
+        :return: Результат удаления диска
+        """
+        if len(args) != 1:
+            return "Неверная команда REMOVE_DISK. Использование: REMOVE_DISK <disk_id>"
 
-                return "\n".join(vm_list)
-        except Exception as e:
-            return f"Error fetching VMs: {str(e)}"
+        disk_id = args[0]
+
+        async with self.db_pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM disks WHERE id = $1", disk_id)
+
+            if result == "DELETE 0":
+                return f"Диск {disk_id} не найден"
+
+            return f"Диск {disk_id} удален"
+
+    async def check_all_vms(self, _=None):
+        """
+        Проверка всех виртуальных машин.
+
+        :return: Список всех ВМ
+        """
+        async with self.db_pool.acquire() as conn:
+            records = await conn.fetch("SELECT * FROM vms")
+            if not records:
+                return "Виртуальные машины не найдены"
+
+            return "\n".join(
+                [f"{r['id']}: {r['ram']}MB RAM, {r['cpu']}CPU" for r in records]
+            )
 
 
-async def main():
-    server = VMServer()
-    await server.start()
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
-        print("⏳ Starting server...")
-        asyncio.run(main())
+        print("⏳ Запуск сервера...")
+        server = VMServer()
+        asyncio.run(server.start())
     except KeyboardInterrupt:
-        print("\n🛑 Server stopped")
-
+        print("\n🛑 Сервер остановлен")

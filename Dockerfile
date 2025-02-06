@@ -2,17 +2,25 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Устанавливаем Poetry
-RUN pip install --no-cache-dir poetry
+# Установка зависимостей для сборки
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Копируем файлы Poetry
+# Установка Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 -
+
+# Добавление Poetry в PATH
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Копируем зависимости
 COPY pyproject.toml poetry.lock ./
 
-# Устанавливаем зависимости с помощью Poetry
-RUN poetry install --no-root --no-interaction --no-ansi
+# Установка зависимостей проекта
+RUN poetry install --no-interaction --no-root
 
-# Копируем остальные файлы
+# Копируем исходный код
 COPY . .
 
-# Команда для запуска сервера
-CMD ["poetry", "run", "python", "server/server.py"]
+# Команда для запуска
+CMD ["poetry", "run", "python", "-m", "server.server"]

@@ -1,39 +1,39 @@
 import asyncio
 
 async def handle_input(reader, writer):
-    """Обработчик команд, введённых пользователем."""
+    """Обработчик команд, введённых пользователем и взаимодействие с сервером."""
     try:
         while True:
-            # Считываем команду пользователя из консоли
-            user_input = input("Enter command: ")
+            user_input = input("Введите команду: ")
 
-            # Если пользователь хочет выйти из клиента
             if user_input.lower() in ("exit", "quit"):
-                print("Closing client connection...")
+                print("Закрытие соединения с клиентом...")
+                writer.write("exit\n".encode())
+                await writer.drain()
                 break
 
-            # Отправляем команду на сервер
             writer.write((user_input + "\n").encode())
             await writer.drain()
 
-            # Ждём ответ сервера
             data = await reader.read(4096)
             if not data:
-                print("Server closed connection.")
+                print("Сервер закрыл соединение.")
                 break
 
-            print(f"Response: {data.decode().strip()}")
+            response = data.decode().strip()
+            print(f"Ответ от сервера: {response}")
+
     except KeyboardInterrupt:
-        print("Client interrupted.")
+        print("Прерывание клиента.")
     finally:
         writer.close()
         await writer.wait_closed()
 
-
 async def main(host='localhost', port=8888):
-    print(f"Connecting to server {host}:{port}...")
+    """Основная функция для подключения к серверу и запуска обработки ввода."""
+    print(f"Подключение к серверу {host}:{port}...")
     reader, writer = await asyncio.open_connection(host, port)
-    print("Connected to server.")
+    print("Соединение с сервером установлено.")
     await handle_input(reader, writer)
 
 if __name__ == "__main__":
