@@ -1,31 +1,40 @@
 import asyncio
 
-
-async def client(host='127.0.0.1', port=8888):
+async def handle_input(reader, writer):
+    """Обработчик команд, введённых пользователем."""
     try:
-        reader, writer = await asyncio.open_connection(host, port)
-        print("Connected to server")
         while True:
-            command = input("Enter command: ")
-            if command.lower() in ['exit', 'quit']:
+            # Считываем команду пользователя из консоли
+            user_input = input("Enter command: ")
+
+            # Если пользователь хочет выйти из клиента
+            if user_input.lower() in ("exit", "quit"):
+                print("Closing client connection...")
                 break
 
-            writer.write(command.encode())
+            # Отправляем команду на сервер
+            writer.write((user_input + "\n").encode())
             await writer.drain()
 
-            data = await reader.read(1024)
-            print(f"Response: {data.decode()}")
+            # Ждём ответ сервера
+            data = await reader.read(4096)
+            if not data:
+                print("Server closed connection.")
+                break
 
-    except (ConnectionResetError, asyncio.CancelledError):
-        print("Connection lost")
+            print(f"Response: {data.decode().strip()}")
+    except KeyboardInterrupt:
+        print("Client interrupted.")
     finally:
-        if not writer.is_closing():
-            writer.close()
-            await writer.wait_closed()
-        print("Disconnected")
+        writer.close()
+        await writer.wait_closed()
 
-async def main():
-    await client()
+
+async def main(host='localhost', port=8888):
+    print(f"Connecting to server {host}:{port}...")
+    reader, writer = await asyncio.open_connection(host, port)
+    print("Connected to server.")
+    await handle_input(reader, writer)
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -114,50 +114,71 @@ class VMServer:
             return await self.remove_vm(parts[1:])
         elif command == "ADD_DISK":
             return await self.add_disk(parts[1:])
+        elif command == "CHECK_ALL_VMS":
+            return await self.check_all_vms()
         else:
             return "Unknown command"
 
     async def authenticate_vm(self, args):
         if len(args) != 3:
-            return "Invalid AUTH command"
+            return "Invalid AUTH command. Usage: AUTH <vm_id> <ram> <cpu>"
 
         vm_id, ram, cpu = args
+        ram = int(ram)
+        cpu = int(cpu)
+
         try:
             async with self.db_pool.acquire() as conn:
                 # Проверяем существование ВМ в БД
                 vm = await conn.fetchrow("SELECT * FROM vms WHERE id = $1", vm_id)
                 if vm:
-                    if vm["ram"] == int(ram) and vm["cpu"] == int(cpu):
-                        self.authenticated_vms[vm_id] = VirtualMachine(vm_id, int(ram), int(cpu))
+                    # Если машина уже есть в БД:
+                    if vm["ram"] == ram and vm["cpu"] == cpu:
+                        # Если параметры совпали, значит "аутентификация удалась"
+                        self.authenticated_vms[vm_id] = VirtualMachine(vm_id, ram, cpu)
                         return f"VM {vm_id} authenticated"
-                    return "Authentication failed"
-
-                # Если не существует - создаем новую
-                await conn.execute(
-                    "INSERT INTO vms (id, ram, cpu) VALUES ($1, $2, $3)",
-                    vm_id, int(ram), int(cpu)
-                )
-                self.authenticated_vms[vm_id] = VirtualMachine(vm_id, int(ram), int(cpu))
-                return f"VM {vm_id} registered and authenticated"
+                    else:
+                        # Если ID совпал, а ram/cpu — нет, значит нельзя "перезаписать" ту же ВМ:
+                        return "Authentication failed (VM exists with other specs)"
+                else:
+                    # Если в БД нет — пытаемся создать новую запись:
+                    await conn.execute(
+                        "INSERT INTO vms (id, ram, cpu) VALUES ($1, $2, $3)",
+                        vm_id, ram, cpu
+                    )
+                    # Добавляем объект в authenticated_vms
+                    self.authenticated_vms[vm_id] = VirtualMachine(vm_id, ram, cpu)
+                    return f"VM {vm_id} registered and authenticated"
 
         except asyncpg.UniqueViolationError:
-            return f"VM {vm_id} already exists"
+            # Если кто-то параллельно вставил запись с таким же id:
+            return f"VM {vm_id} already exists (duplicate ID)."
         except Exception as e:
             return f"Error: {str(e)}"
 
     async def add_vm(self, args):
-        """Добавление новой виртуальной машины.
-
-        Args:
-            args (list): Список аргументов, содержащий идентификатор ВМ, RAM и CPU.
-
-        Returns:
-            str: Результат добавления ВМ.
-        """
+        """Добавление новой виртуальной машины (и в БД, и в локальный словарь)."""
         if len(args) != 3:
-            return "Invalid ADD_VM command"
+            return "Invalid ADD_VM command. Usage: ADD_VM <id> <ram> <cpu>"
+
         vm_id, ram, cpu = args
-        vm = VirtualMachine(vm_id, int(ram), int(cpu))
+        ram = int(ram)
+        cpu = int(cpu)
+
+        # Сначала пытаемся записать новую ВМ в БД
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute(
+                    "INSERT INTO vms (id, ram, cpu) VALUES ($1, $2, $3)",
+                    vm_id, ram, cpu
+                )
+        except asyncpg.UniqueViolationError:
+            return f"VM {vm_id} already exists (duplicate ID)."
+        except Exception as e:
+            return f"Error creating VM in DB: {str(e)}"
+
+        # Если вставка в БД успешно прошла, создаём объект в памяти
+        vm = VirtualMachine(vm_id, ram, cpu)
         self.vms[vm_id] = vm
         return f"VM {vm_id} added"
 
@@ -183,18 +204,29 @@ class VMServer:
         if len(args) != 3:
             return "Invalid UPDATE_VM command"
         vm_id, ram, cpu = args
+        ram = int(ram)
+        cpu = int(cpu)
 
-        # Сначала смотрим в self.vms
+        # Обновляем записи в памяти (если есть)
         if vm_id in self.vms:
-            self.vms[vm_id].update(int(ram), int(cpu))
-            return f"VM {vm_id} updated"
-
-        # Если нет — смотрим в self.authenticated_vms
+            self.vms[vm_id].update(ram, cpu)
         if vm_id in self.authenticated_vms:
-            self.authenticated_vms[vm_id].update(int(ram), int(cpu))
-            return f"VM {vm_id} updated"
+            self.authenticated_vms[vm_id].update(ram, cpu)
 
-        return f"VM {vm_id} not found"
+        # Обновляем в БД
+        try:
+            async with self.db_pool.acquire() as conn:
+                result = await conn.execute("""
+                    UPDATE vms
+                    SET ram = $2, cpu = $3
+                    WHERE id = $1
+                """, vm_id, ram, cpu)
+                if result == "UPDATE 0":
+                    return f"VM {vm_id} not found in DB"
+        except Exception as e:
+            return f"Error updating DB: {str(e)}"
+
+        return f"VM {vm_id} updated"
 
     async def logout_vm(self, args):
         """Выход из авторизованной виртуальной машины.
@@ -209,6 +241,8 @@ class VMServer:
             return "Invalid LOGOUT command"
         vm_id = args[0]
         if vm_id in self.authenticated_vms:
+            # Перемещаем ВМ из authenticated_vms в vms
+            self.vms[vm_id] = self.authenticated_vms[vm_id]
             del self.authenticated_vms[vm_id]
             return f"VM {vm_id} logged out"
         return f"VM {vm_id} not found"
@@ -262,6 +296,10 @@ class VMServer:
 
         disk_id, vm_id, size = args
         try:
+            size_int = int(size)
+            if size_int <= 0:
+                return "Invalid size: must be a positive integer"
+
             async with self.db_pool.acquire() as conn:
                 # Проверяем существование ВМ
                 vm_exists = await conn.fetchval("SELECT 1 FROM vms WHERE id = $1", vm_id)
@@ -271,9 +309,11 @@ class VMServer:
                 # Добавляем диск
                 await conn.execute(
                     "INSERT INTO disks (id, vm_id, size) VALUES ($1, $2, $3)",
-                    disk_id, vm_id, int(size)
+                    disk_id, vm_id, size_int
                 )
                 return f"Disk {disk_id} added to VM {vm_id}"
+        except ValueError:
+            return f"Invalid size: must be an integer"
         except asyncpg.UniqueViolationError:
             return f"Disk {disk_id} already exists"
         except Exception as e:
@@ -294,6 +334,29 @@ class VMServer:
         async with self.db_pool.acquire() as conn:
             await conn.execute("DELETE FROM disks WHERE id = $1", disk_id)
         return f"Disk {disk_id} removed"
+
+    async def check_all_vms(self):
+        """Проверка всех добавленных виртуальных машин.
+
+        Returns:
+            str: Список всех виртуальных машин с их параметрами.
+        """
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Получаем все ВМ из базы данных
+                vms = await conn.fetch('SELECT * FROM vms')
+                if not vms:
+                    return "No VMs found"
+
+                # Формируем список ВМ
+                vm_list = [
+                    f"VM ID: {vm['id']}, RAM: {vm['ram']}MB, CPU: {vm['cpu']} cores"
+                    for vm in vms
+                ]
+
+                return "\n".join(vm_list)
+        except Exception as e:
+            return f"Error fetching VMs: {str(e)}"
 
 
 async def main():
