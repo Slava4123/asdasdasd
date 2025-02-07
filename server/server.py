@@ -2,15 +2,17 @@ import os
 import asyncio
 import asyncpg
 from dotenv import load_dotenv
+from loguru import logger as log
 
 load_dotenv()
 
+# Настройка логирования
+log.add("server.log", rotation="1 MB", retention="10 days", level="INFO", format="{time} {level} {message}")
 
 class VMServer:
     """Сервер для управления виртуальными машинами с хранением состояния в БД."""
 
     def __init__(self):
-        # Инициализация атрибута db_pool
         self.db_pool = None
 
     async def start(self, host='0.0.0.0', port=8888):
@@ -34,7 +36,7 @@ class VMServer:
                 host=db_host,
                 port=db_port
             )
-            print("✅ Успешно подключено к базе данных")
+            log.info("✅ Успешно подключено к базе данных")
 
             async with self.db_pool.acquire() as conn:
                 await conn.execute('''CREATE TABLE IF NOT EXISTS vms (
@@ -51,7 +53,7 @@ class VMServer:
                         size INT NOT NULL
                     )
                 ''')
-                print("✅ Таблицы базы данных созданы")
+                log.info("✅ Таблицы базы данных созданы")
 
             # Запуск сервера
             server = await asyncio.start_server(
@@ -59,13 +61,13 @@ class VMServer:
                 host,
                 port
             )
-            print(f"🚀 Сервер запущен на {host}:{port}")
+            log.info(f"🚀 Сервер запущен на {host}:{port}")
 
             async with server:
                 await server.serve_forever()
 
         except Exception as e:
-            print(f"🔥 Критическая ошибка: {e}")
+            log.critical(f"🔥 Критическая ошибка: {e}")
             raise
 
     async def handle_client(self, reader, writer):
@@ -76,21 +78,21 @@ class VMServer:
         :param writer: Канал записи для клиента
         """
         addr = writer.get_extra_info('peername')
-        print(f"Новое подключение от {addr}")
+        log.info(f"Новое подключение от {addr}")
         try:
             while True:
                 data = await reader.read(100)
                 if not data:
                     break
                 message = data.decode().strip()
-                print(f"Получено от {addr}: {message}")
+                log.info(f"Получено от {addr}: {message}")
                 response = await self.process_command(message)
                 writer.write(response.encode())
                 await writer.drain()
         except Exception as e:
-            print(f"Ошибка с {addr}: {e}")
+            log.error(f"Ошибка с {addr}: {e}")
         finally:
-            print(f"Соединение с {addr} закрыто")
+            log.info(f"Соединение с {addr} закрыто")
             writer.close()
 
     async def process_command(self, message):
@@ -160,7 +162,6 @@ class VMServer:
                     return f"ВМ {vm_id} аутентифицирована"
                 return "Ошибка аутентификации: неверные характеристики"
 
-            # Создание новой записи
             try:
                 await conn.execute(
                     "INSERT INTO vms (id, ram, cpu, is_active, is_auth) "
@@ -382,8 +383,8 @@ class VMServer:
 
 if __name__ == '__main__':
     try:
-        print("⏳ Запуск сервера...")
+        log.info("⏳ Запуск сервера...")
         server = VMServer()
         asyncio.run(server.start())
     except KeyboardInterrupt:
-        print("\n🛑 Сервер остановлен")
+        log.info("\n🛑 Сервер остановлен")

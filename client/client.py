@@ -1,4 +1,6 @@
 import asyncio
+from loguru import logger as log
+
 
 async def handle_input(reader, writer):
     """Обработчик команд, введённых пользователем и взаимодействие с сервером."""
@@ -21,19 +23,19 @@ async def handle_input(reader, writer):
                 break
 
             response = data.decode().strip()
-            print(f"Ответ от сервера: {response}")
+            log.info(f"Ответ от сервера: {response}")
 
     except KeyboardInterrupt:
-        print("Прерывание клиента.")
+        log.error("Прерывание клиента.")
     finally:
         writer.close()
         await writer.wait_closed()
 
 async def main(host='localhost', port=8888):
     """Основная функция для подключения к серверу и запуска обработки ввода."""
-    print(f"Подключение к серверу {host}:{port}...")
+    log.info(f"Подключение к серверу {host}:{port}...")
     reader, writer = await asyncio.open_connection(host, port)
-    print("Соединение с сервером установлено.")
+    log.info("Соединение с сервером установлено.")
     await handle_input(reader, writer)
 
 if __name__ == "__main__":
