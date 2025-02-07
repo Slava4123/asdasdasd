@@ -17,6 +17,7 @@ __pycache__
 # Логи и временные файлы
 *.log
 *.tmp
+server.log
 
 # Файлы базы данных
 *.sqlite3

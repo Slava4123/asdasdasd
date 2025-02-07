@@ -6,7 +6,6 @@ from loguru import logger as log
 
 load_dotenv()
 
-# Настройка логирования
 log.add("server.log", rotation="1 MB", retention="10 days", level="INFO", format="{time} {level} {message}")
 
 class VMServer:
@@ -55,7 +54,6 @@ class VMServer:
                 ''')
                 log.info("✅ Таблицы базы данных созданы")
 
-            # Запуск сервера
             server = await asyncio.start_server(
                 self.handle_client,
                 host,

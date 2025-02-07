@@ -9,7 +9,7 @@ async def handle_input(reader, writer):
             user_input = input("Введите команду: ")
 
             if user_input.lower() in ("exit", "quit"):
-                print("Закрытие соединения с клиентом...")
+                log.info("Закрытие соединения с клиентом...")
                 writer.write("exit\n".encode())
                 await writer.drain()
                 break
@@ -19,7 +19,7 @@ async def handle_input(reader, writer):
 
             data = await reader.read(4096)
             if not data:
-                print("Сервер закрыл соединение.")
+                log.info("Сервер закрыл соединение.")
                 break
 
             response = data.decode().strip()
