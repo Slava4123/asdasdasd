@@ -1,9 +1,8 @@
 import asyncio
 from loguru import logger as log
 
-
 async def handle_input(reader, writer):
-    """Обработчик команд, введённых пользователем и взаимодействие с сервером."""
+    """Обрабатывает ввод пользователя и отправляет команды на сервер, ожидая ответа."""
     try:
         while True:
             user_input = input("Введите команду: ")
@@ -27,16 +26,21 @@ async def handle_input(reader, writer):
 
     except KeyboardInterrupt:
         log.error("Прерывание клиента.")
+    except Exception as e:
+        log.error(f"Ошибка при обработке команды: {e}")
     finally:
         writer.close()
         await writer.wait_closed()
 
 async def main(host='localhost', port=8888):
-    """Основная функция для подключения к серверу и запуска обработки ввода."""
+    """Основная функция для подключения к серверу и обработки ввода пользователя."""
     log.info(f"Подключение к серверу {host}:{port}...")
-    reader, writer = await asyncio.open_connection(host, port)
-    log.info("Соединение с сервером установлено.")
-    await handle_input(reader, writer)
+    try:
+        reader, writer = await asyncio.open_connection(host, port)
+        log.info("Соединение с сервером установлено.")
+        await handle_input(reader, writer)
+    except Exception as e:
+        log.error(f"Не удалось подключиться к серверу: {e}")
 
 if __name__ == "__main__":
     asyncio.run(main())
