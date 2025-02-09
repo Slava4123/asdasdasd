@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from .db_manager import DatabaseManager
+
+from server.db_manager import DatabaseManager
 
 
 class Command(ABC):
